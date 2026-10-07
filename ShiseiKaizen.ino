@@ -2,25 +2,22 @@
 // Smart Posture System
 // ESP32 + FSR + Ultrasonic + Motor + Buzzer
 //
-// เก็บ Database เฉพาะ BAD_POSTURE
+// Database เก็บเฉพาะ BAD_POSTURE
+// WiFi Setup ผ่าน Captive Portal
 // =====================================================
 
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <HTTPClient.h>
 
-
 // =====================================================
-// 1. WiFi + API
+// 1. API
 // =====================================================
 
-const char* ssid =
-  "Mxw💤";
-
-const char* password =
-  "Mew13579";
-
+// *** IP เครื่องที่รัน PHP Server ***
+// ESP32 ต้องมองเห็น IP นี้ได้
 const char* serverUrl =
-  "http://172.20.10.2/shisei_api/api.php";
+  "http://192.168.1.124/shisei_api/api.php";
 
 
 // =====================================================
@@ -28,13 +25,9 @@ const char* serverUrl =
 // =====================================================
 
 const int FSR_PIN = 34;
-
 const int TRIG_PIN = 25;
-
 const int ECHO_PIN = 26;
-
 const int MOTOR_PIN = 27;
-
 const int BUZZER_PIN = 14;
 
 
@@ -42,34 +35,24 @@ const int BUZZER_PIN = 14;
 // 3. SETTINGS
 // =====================================================
 
-// FSR > 100 = มีคนนั่ง
-const int FSR_THRESHOLD = 100;
+// FSR > 400 = มีคนนั่ง
+const int FSR_THRESHOLD = 600;
 
-
-// <= 5cm = หลังตรง
+// <= 5 cm = หลังตรง
 const float STRAIGHT_DISTANCE = 5.0;
 
-
-// >5 ถึง 55cm = หลังงอ
+// > 5 ถึง 55 cm = หลังงอ
 const float MAX_DISTANCE = 55.0;
 
+// หลังงอครบ 2 วินาที
+const unsigned long BAD_POSTURE_TIME = 2000;
 
-// หลังงอ 2 วิ
-const unsigned long BAD_POSTURE_TIME =
-  2000;
+// อ่าน Sensor ทุก 100 ms
+const unsigned long SENSOR_INTERVAL = 100;
 
-
-// อ่าน Sensor ทุก 100ms
-const unsigned long SENSOR_INTERVAL =
-  100;
-
-
-// ปี๊บถี่
-const unsigned long BEEP_ON_TIME =
-  100;
-
-const unsigned long BEEP_OFF_TIME =
-  80;
+// Buzzer ปี๊บถี่
+const unsigned long BEEP_ON_TIME = 100;
+const unsigned long BEEP_OFF_TIME = 80;
 
 
 // =====================================================
@@ -77,92 +60,89 @@ const unsigned long BEEP_OFF_TIME =
 // =====================================================
 
 bool personSitting = false;
-
 bool countingPosture = false;
-
 bool warningActive = false;
-
 bool buzzerState = false;
 
-
-// ส่ง DB แล้วหรือยัง
+// ส่ง Database แล้วหรือยัง
 bool badPostureSent = false;
 
-
 unsigned long badPostureStart = 0;
-
 unsigned long lastSensorTime = 0;
-
 unsigned long lastBeepTime = 0;
 
 
 // =====================================================
-// WIFI
+// WIFI SETUP
 // =====================================================
 
 void setupWiFi() {
 
   WiFi.mode(WIFI_STA);
 
-  WiFi.begin(
-    ssid,
-    password
-  );
+  WiFiManager wm;
 
+  // รอหน้า Setup สูงสุด 3 นาที
+  wm.setConfigPortalTimeout(180);
 
-  Serial.print(
-    "Connecting to WiFi"
-  );
+  Serial.println();
+  Serial.println("================================");
+  Serial.println("       WIFI AUTO SETUP");
+  Serial.println("================================");
 
+  Serial.println(">> Trying saved WiFi...");
+  Serial.println(">> If connection fails:");
+  Serial.println(">> Connect to: Shisei-Kaizen-Setup");
+  Serial.println();
 
-  int retry = 0;
+  /*
+     การทำงานของ autoConnect()
 
+     1. ถ้ามี WiFi ที่เคยบันทึกไว้
+        -> ESP32 ต่อเอง
 
-  while (
-    WiFi.status() != WL_CONNECTED &&
-    retry < 20
-  ) {
+     2. ถ้าต่อไม่ได้
+        -> ESP32 สร้าง WiFi
+           Shisei-Kaizen-Setup
 
-    delay(500);
+     3. ผู้ใช้ใช้มือถือเชื่อมต่อ
+        -> เลือก WiFi
+        -> ใส่ Password
 
-    Serial.print(".");
+     4. ESP32 บันทึกค่าไว้
+  */
 
-    retry++;
-  }
-
+  bool connected =
+    wm.autoConnect("Shisei-Kaizen-Setup");
 
   if (
-    WiFi.status() ==
-    WL_CONNECTED
+    connected &&
+    WiFi.status() == WL_CONNECTED
   ) {
 
     Serial.println();
+    Serial.println(">> WiFi Connected!");
 
-    Serial.println(
-      ">> WiFi Connected!"
-    );
+    Serial.print(">> SSID = ");
+    Serial.println(WiFi.SSID());
 
+    Serial.print(">> ESP32 IP = ");
+    Serial.println(WiFi.localIP());
 
-    Serial.print(
-      ">> ESP32 IP = "
-    );
+    Serial.print(">> Signal = ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
 
-    Serial.println(
-      WiFi.localIP()
-    );
+  }
 
-  } else {
+  else {
 
     Serial.println();
+    Serial.println(">> WiFi setup timeout");
+    Serial.println(">> Continue in Offline Mode");
 
-    Serial.println(
-      ">> WiFi Failed"
-    );
-
-    Serial.println(
-      ">> Offline mode"
-    );
   }
+
 }
 
 
@@ -177,15 +157,16 @@ void sendBadPosture(
 ) {
 
   Serial.println();
-
   Serial.println(
     "========== SEND PHP =========="
   );
 
+  // -----------------------------------------
+  // เช็ก WiFi
+  // -----------------------------------------
 
   if (
-    WiFi.status() !=
-    WL_CONNECTED
+    WiFi.status() != WL_CONNECTED
   ) {
 
     Serial.println(
@@ -201,29 +182,23 @@ void sendBadPosture(
 
 
   WiFiClient client;
-
   HTTPClient http;
 
 
-  Serial.print(
-    ">> URL: "
-  );
+  Serial.print(">> URL: ");
+  Serial.println(serverUrl);
 
-  Serial.println(
-    serverUrl
-  );
 
+  // -----------------------------------------
+  // เชื่อม PHP API
+  // -----------------------------------------
 
   http.begin(
     client,
     serverUrl
   );
 
-
-  http.setTimeout(
-    5000
-  );
-
+  http.setTimeout(5000);
 
   http.addHeader(
     "Content-Type",
@@ -231,91 +206,83 @@ void sendBadPosture(
   );
 
 
-  String jsonPayload = "{";
+  // -----------------------------------------
+  // JSON
+  // -----------------------------------------
 
+  String jsonPayload = "{";
 
   jsonPayload +=
     "\"device_id\":1,";
 
-
   jsonPayload +=
     "\"event_type\":\"BAD_POSTURE\",";
-
 
   jsonPayload +=
     "\"distance_cm\":" +
     String(distance, 2) +
     ",";
 
-
   jsonPayload +=
     "\"fsr_value\":" +
     String(fsr) +
     ",";
-
 
   jsonPayload +=
     "\"duration_seconds\":" +
     String(durationSec) +
     ",";
 
-
   jsonPayload +=
     "\"note\":\"ESP32 Local Posture Guard\"";
-
 
   jsonPayload += "}";
 
 
-  Serial.print(
-    ">> JSON = "
-  );
+  Serial.print(">> JSON = ");
+  Serial.println(jsonPayload);
 
-  Serial.println(
-    jsonPayload
-  );
 
+  // -----------------------------------------
+  // POST
+  // -----------------------------------------
 
   int httpCode =
-    http.POST(
-      jsonPayload
-    );
+    http.POST(jsonPayload);
 
 
   Serial.print(
     ">> HTTP CODE = "
   );
 
-  Serial.println(
-    httpCode
-  );
+  Serial.println(httpCode);
 
 
-  if (httpCode > 0) {
+  if (
+    httpCode > 0
+  ) {
 
     String response =
       http.getString();
-
 
     Serial.print(
       ">> PHP RESPONSE = "
     );
 
-    Serial.println(
-      response
-    );
+    Serial.println(response);
 
-  } else {
+  }
+
+  else {
 
     Serial.print(
       ">> CONNECTION ERROR = "
     );
 
     Serial.println(
-      http.errorToString(
-        httpCode
-      )
+      http.errorToString(httpCode)
     );
+
   }
 
 
@@ -327,6 +294,7 @@ void sendBadPosture(
   );
 
   Serial.println();
+
 }
 
 
@@ -338,9 +306,9 @@ int readFSR() {
 
   long total = 0;
 
+  // อ่าน 5 ครั้งแล้วเฉลี่ย
+  // เพื่อลด Noise
 
-  // ค่า Sensor จริง 5 ครั้ง
-  // แล้วเฉลี่ยเพื่อลด noise
   for (
     int i = 0;
     i < 5;
@@ -348,17 +316,14 @@ int readFSR() {
   ) {
 
     total +=
-      analogRead(
-        FSR_PIN
-      );
-
+      analogRead(FSR_PIN);
 
     delay(2);
+
   }
 
+  return total / 5;
 
-  return
-    total / 5;
 }
 
 
@@ -373,10 +338,7 @@ float readDistance() {
     LOW
   );
 
-
-  delayMicroseconds(
-    2
-  );
+  delayMicroseconds(2);
 
 
   digitalWrite(
@@ -384,10 +346,7 @@ float readDistance() {
     HIGH
   );
 
-
-  delayMicroseconds(
-    10
-  );
+  delayMicroseconds(10);
 
 
   digitalWrite(
@@ -409,10 +368,10 @@ float readDistance() {
   ) {
 
     return -1;
+
   }
 
 
-  // ค่าระยะจริงจาก Ultrasonic
   float distance =
     duration *
     0.0343 /
@@ -420,6 +379,7 @@ float readDistance() {
 
 
   return distance;
+
 }
 
 
@@ -434,20 +394,16 @@ void startBeep() {
     1800
   );
 
-
-  delay(
-    180
-  );
-
+  delay(180);
 
   noTone(
     BUZZER_PIN
   );
 
-
   Serial.println(
     ">> SYSTEM START BEEP"
   );
+
 }
 
 
@@ -462,6 +418,7 @@ void startWarning() {
   ) {
 
     return;
+
   }
 
 
@@ -480,7 +437,7 @@ void startWarning() {
   );
 
 
-  // เริ่มปี๊บ
+  // เริ่ม Buzzer
   tone(
     BUZZER_PIN,
     2000
@@ -504,6 +461,7 @@ void startWarning() {
   Serial.println(
     "!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   );
+
 }
 
 
@@ -518,6 +476,7 @@ void updateWarning() {
   ) {
 
     return;
+
   }
 
 
@@ -531,7 +490,10 @@ void updateWarning() {
   );
 
 
-  // เสียงกำลังดัง
+  // -----------------------------------------
+  // Buzzer กำลังดัง
+  // -----------------------------------------
+
   if (
     buzzerState
   ) {
@@ -542,22 +504,23 @@ void updateWarning() {
       BEEP_ON_TIME
     ) {
 
-      buzzerState =
-        false;
+      buzzerState = false;
 
-
-      lastBeepTime =
-        now;
-
+      lastBeepTime = now;
 
       noTone(
         BUZZER_PIN
       );
+
     }
 
   }
 
-  // เสียงกำลังเงียบ
+
+  // -----------------------------------------
+  // Buzzer กำลังเงียบ
+  // -----------------------------------------
+
   else {
 
     if (
@@ -566,20 +529,19 @@ void updateWarning() {
       BEEP_OFF_TIME
     ) {
 
-      buzzerState =
-        true;
+      buzzerState = true;
 
-
-      lastBeepTime =
-        now;
-
+      lastBeepTime = now;
 
       tone(
         BUZZER_PIN,
         2000
       );
+
     }
+
   }
+
 }
 
 
@@ -589,23 +551,19 @@ void updateWarning() {
 
 void stopWarning() {
 
-  warningActive =
-    false;
+  warningActive = false;
 
-
-  buzzerState =
-    false;
-
+  buzzerState = false;
 
   noTone(
     BUZZER_PIN
   );
 
-
   digitalWrite(
     MOTOR_PIN,
     LOW
   );
+
 }
 
 
@@ -615,19 +573,16 @@ void stopWarning() {
 
 void resetBadPosture() {
 
-  countingPosture =
-    false;
+  countingPosture = false;
+
+  badPostureStart = 0;
 
 
-  badPostureStart =
-    0;
-
-
-  // สำคัญ
   // พอกลับมาหลังตรง
   // สามารถบันทึก BAD ครั้งต่อไปได้
-  badPostureSent =
-    false;
+
+  badPostureSent = false;
+
 }
 
 
@@ -637,14 +592,12 @@ void resetBadPosture() {
 
 void setup() {
 
-  Serial.begin(
-    115200
-  );
+  Serial.begin(115200);
+
+  delay(500);
 
 
-  analogReadResolution(
-    12
-  );
+  analogReadResolution(12);
 
 
   pinMode(
@@ -652,24 +605,20 @@ void setup() {
     INPUT
   );
 
-
   pinMode(
     TRIG_PIN,
     OUTPUT
   );
-
 
   pinMode(
     ECHO_PIN,
     INPUT
   );
 
-
   pinMode(
     MOTOR_PIN,
     OUTPUT
   );
-
 
   pinMode(
     BUZZER_PIN,
@@ -682,20 +631,26 @@ void setup() {
     LOW
   );
 
-
   digitalWrite(
     MOTOR_PIN,
     LOW
   );
-
 
   noTone(
     BUZZER_PIN
   );
 
 
+  // -----------------------------------------
+  // WiFi
+  // -----------------------------------------
+
   setupWiFi();
 
+
+  // -----------------------------------------
+  // Ready
+  // -----------------------------------------
 
   Serial.println();
 
@@ -712,7 +667,7 @@ void setup() {
   );
 
   Serial.println(
-    "FSR > 100 = SITTING"
+    "FSR > 400 = SITTING"
   );
 
   Serial.println(
@@ -730,6 +685,7 @@ void setup() {
   Serial.println(
     "================================"
   );
+
 }
 
 
@@ -739,10 +695,13 @@ void setup() {
 
 void loop() {
 
-
-  // Buzzer ปี๊บถี่แบบไม่ block
+  // Buzzer ปี๊บถี่แบบไม่ Block
   updateWarning();
 
+
+  // -----------------------------------------
+  // Sensor Interval
+  // -----------------------------------------
 
   if (
     millis() -
@@ -751,6 +710,7 @@ void loop() {
   ) {
 
     return;
+
   }
 
 
@@ -759,7 +719,7 @@ void loop() {
 
 
   // ===================================================
-  // อ่านค่าจริง
+  // อ่าน Sensor
   // ===================================================
 
   int fsrValue =
@@ -771,18 +731,16 @@ void loop() {
 
 
   // ===================================================
-  // แสดงค่าตลอดเวลา
+  // แสดงค่า
   // ===================================================
 
   Serial.print(
     "FSR = "
   );
 
-
   Serial.print(
     fsrValue
   );
-
 
   Serial.print(
     " | Ultrasonic = "
@@ -797,22 +755,24 @@ void loop() {
       "NO ECHO"
     );
 
-  } else {
+  }
+
+  else {
 
     Serial.print(
       distance,
       2
     );
 
-
     Serial.print(
       " cm"
     );
+
   }
 
 
   // ===================================================
-  // FSR > 100
+  // ตรวจว่ามีคนนั่งหรือไม่
   // ===================================================
 
   bool sitting =
@@ -840,11 +800,11 @@ void loop() {
       Serial.println(
         ">> USER LEFT"
       );
+
     }
 
 
-    personSitting =
-      false;
+    personSitting = false;
 
 
     stopWarning();
@@ -852,8 +812,9 @@ void loop() {
     resetBadPosture();
 
 
-    // *** ไม่ส่ง Database ***
+    // ไม่ส่ง Database
     return;
+
   }
 
 
@@ -865,8 +826,7 @@ void loop() {
     !personSitting
   ) {
 
-    personSitting =
-      true;
+    personSitting = true;
 
 
     Serial.println(
@@ -876,17 +836,17 @@ void loop() {
 
     startBeep();
 
-
     resetBadPosture();
 
 
-    // *** ไม่ส่ง Database ***
+    // ไม่ส่ง Database
     return;
+
   }
 
 
   // ===================================================
-  // Ultrasonic NO ECHO
+  // ULTRASONIC ไม่มี Echo
   // ===================================================
 
   if (
@@ -903,13 +863,15 @@ void loop() {
     resetBadPosture();
 
 
-    // *** ไม่ส่ง Database ***
+    // ไม่ส่ง Database
     return;
+
   }
 
 
   // ===================================================
-  // POSTURE OK <=5cm
+  // POSTURE OK
+  // <= 5 cm
   // ===================================================
 
   if (
@@ -927,14 +889,15 @@ void loop() {
     resetBadPosture();
 
 
-    // *** ไม่ส่ง Database ***
+    // ไม่ส่ง Database
     return;
+
   }
 
 
   // ===================================================
   // BAD POSTURE
-  // >5 ถึง <=55
+  // > 5 ถึง <= 55 cm
   // ===================================================
 
   if (
@@ -946,16 +909,19 @@ void loop() {
   ) {
 
 
+    // -----------------------------------------
+    // เริ่มจับเวลา
+    // -----------------------------------------
+
     if (
       !countingPosture
     ) {
 
-      countingPosture =
-        true;
-
+      countingPosture = true;
 
       badPostureStart =
         millis();
+
     }
 
 
@@ -968,13 +934,10 @@ void loop() {
       " | BAD POSTURE | Time = "
     );
 
-
     Serial.print(
-      elapsed /
-      1000.0,
+      elapsed / 1000.0,
       1
     );
-
 
     Serial.println(
       " sec"
@@ -982,7 +945,7 @@ void loop() {
 
 
     // =================================================
-    // ครบ 2 วินาที
+    // หลังงอครบ 2 วินาที
     // =================================================
 
     if (
@@ -991,26 +954,29 @@ void loop() {
     ) {
 
 
+      // -----------------------------------------
       // เปิดเสียง + Motor
+      // -----------------------------------------
+
       if (
         !warningActive
       ) {
 
         startWarning();
+
       }
 
 
-      // -----------------------------------------------
+      // -----------------------------------------
       // ส่ง Database แค่ครั้งเดียว
-      // ต่อการหลังงอ 1 รอบ
-      // -----------------------------------------------
+      // ต่อการหลังงอหนึ่งรอบ
+      // -----------------------------------------
 
       if (
         !badPostureSent
       ) {
 
-        badPostureSent =
-          true;
+        badPostureSent = true;
 
 
         Serial.println();
@@ -1018,7 +984,6 @@ void loop() {
         Serial.println(
           ">> BAD_POSTURE CONFIRMED"
         );
-
 
         Serial.println(
           ">> SEND TO DATABASE"
@@ -1030,16 +995,19 @@ void loop() {
           fsrValue,
           elapsed / 1000
         );
+
       }
+
     }
 
 
     return;
+
   }
 
 
   // ===================================================
-  // ระยะ >55cm
+  // ระยะ > 55 cm
   // ===================================================
 
   if (
@@ -1057,7 +1025,9 @@ void loop() {
     resetBadPosture();
 
 
-    // *** ไม่ส่ง Database ***
+    // ไม่ส่ง Database
     return;
+
   }
+
 }
